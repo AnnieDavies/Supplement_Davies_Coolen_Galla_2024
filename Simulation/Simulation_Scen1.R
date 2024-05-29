@@ -1,0 +1,84 @@
+# Code to perform the simulation study for scenario 1 in Davies, Coolen and Galla (2024).
+# Written by A. Davies (2023).
+# Based on code by D. Rizopoulos: https://github.com/drizopoulos/jm_and_lm
+# Simulation methodology is described in full in the Supplementary Material of 
+# Davies, Coolen and Galla (2024).
+# Data is simulated from a joint model with a linear random slopes and random intercept
+# longitudinal model and a survival model with an instantaneous association.
+# Data is split into 10 groups to perform 10-fold cross validation
+# The model is fitted & cross validation is performed for the Retarded Kernel models by 
+# calling to a Python code using reticulate. The Python results are then transformed to R dataframes
+# Then the same analysis is performed for JM and LM in R
+
+library("JMbayes")
+library(lcsm)
+library("xtable") #for writing to files
+library("MASS")
+library("splines")
+library(tidyverse)
+library("reticulate")
+library(doSNOW)
+library(foreach)
+
+# internal JMbayes function to create landmark data sets
+dataLM <- JMbayes:::dataLM
+
+#set wd for reading in functions
+setwd("~\\Simulation")
+list.files("functions", full.names = TRUE) %>% map(source)
+
+NR <- 50 #number of iterations
+
+## 1. Generate Data~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+set.seed(1)
+dat_list1 <- list()
+for(it in 1:NR){
+  print(paste("Data gen iteration ", it))
+  dat <- data_gen(scenario = 1, 1000)
+  dat_list1 <<- c(dat_list1, list(dat))
+}
+save.image("DataGenS1.RData")
+
+##2. Split data for cross validation~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+cl <- makeCluster(detectCores())
+registerDoSNOW(cl)
+
+dat_split_list_r <- foreach(it = 1:NR) %dopar% {
+  set.seed(it)
+  create_split(dat_list1[[it]])
+}
+parallel::stopCluster(cl)
+
+##3. Delayed Kernel Models~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+source_python("DK_parallel.py")
+
+#re-label results so they don't get overwritten
+DK.res.scen1 <- DK_results
+
+#export data from python
+data_path <- "~\\SAVED DATA\\"
+export_DKdata_python(DK.res.scen1, 1, "A", data_path)
+export_DKdata_python(DK.res.scen1, 1, "B", data_path)
+
+#convert list to R (to save)
+R.DK.results <- convert_py_res(DK.res.scen2a)
+save.image("DK_S1.RData")
+
+##4. Joint models and Landmarking~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+cl <- makeCluster(detectCores(), outfile = "Log-JMLM_Scen1.txt")
+registerDoSNOW(cl)
+
+sim.res.scen1 <- foreach(it = 1:NR,
+                          .packages = c("JMbayes", "lcsm","xtable", "MASS", "splines")) %dopar% {
+                            set.seed(it)
+                            run_sim(dat_split_list_r[[it]])
+                          }
+parallel::stopCluster(cl)
+
+#export results
+export_JMdata(sim.res.scen1, scenario = 1, JM = 1, data_path)
+export_JMdata(sim.res.scen1, scenario = 1, JM = 2, data_path)
+export_LMdata(sim.res.scen1, scenario = 1, data_path)
+
+save.image("JMLM_S1.RData")
+
